@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+
+  db:
+    image: postgres:16
+    container_name: marketbot-db
+    restart: always
+    environment:
+      POSTGRES_DB: marketbot
+      POSTGRES_USER: marketbot
+      POSTGRES_PASSWORD: marketbot
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  api:
+    build: ./backend-go
+    container_name: marketbot-api
+    restart: always
+    depends_on:
+      - db
+    environment:
+      DB_DSN: postgres://marketbot:marketbot@db:5432/marketbot?sslmode=disable
+    ports:
+      - "8081:8080"
+
+  nlp:
+    build: ./nlp
+    container_name: marketbot-nlp
+    restart: always
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
+      - TELETHON_SESSION=${TELETHON_SESSION}
+      - DB_DSN=${DB_DSN}
+
+    volumes:
+      - ./nlp:/app
+
+  bot:
+    build: ./bot
+    container_name: marketbot-bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=8474050703:AAHNMi1MwmQdeNm4XDAT-YReibzQjsOJahg
+      - DB_DSN=postgres://marketbot:marketbot@db:5432/marketbot
+    depends_on:
+      - api
+      - nlp
+      - db
+
+  proxy:
+    image: caddy:latest
+    container_name: marketbot-proxy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile
+
+volumes:
+  db_data:

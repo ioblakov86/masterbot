@@ -1,0 +1,672 @@
+=== ./.github/workflows/deploy.yml ===
+
+=== ./.vscode/settings.json ===
+{
+    "Codegeex.RepoIndex": true
+}
+=== ./backend-go/Dockerfile ===
+FROM golang:1.22-alpine
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -o api
+CMD ["./api"]
+
+=== ./backend-go/go.mod ===
+module marketbot/api
+
+go 1.22
+
+=== ./backend-go/go.sum ===
+
+=== ./backend-go/main.go ===
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Marketbot API started")
+}
+
+=== ./bot/bot.py ===
+import os
+import asyncio
+from aiogram import Bot, Dispatcher, types
+import asyncpg
+
+# ==== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ====
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+DB_DSN = os.getenv("DB_DSN", "postgres://marketbot:marketbot@db:5432/marketbot")
+
+if TOKEN is None:
+    raise ValueError("TELEGRAM_BOT_TOKEN not set!")
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+# ==== ФУНКЦИЯ СОХРАНЕНИЯ СООБЩЕНИЙ С ЦЕНОЙ ====
+async def save_to_db(message: types.Message, price: float = None):
+    conn = await asyncpg.connect(dsn=DB_DSN)
+    await conn.execute(
+        "INSERT INTO raw_messages(chat_id, message_id, sender, text, price) VALUES($1,$2,$3,$4,$5)",
+        message.chat.id,
+        message.message_id,
+        message.from_user.username,
+        message.text,
+        price
+    )
+    await conn.close()
+
+# ==== ОБРАБОТЧИК СООБЩЕНИЙ ====
+async def handle_message(message: types.Message):
+    # Попробуем извлечь цену из текста (например, числа в сообщении)
+    import re
+    prices = re.findall(r'\d+', message.text.replace(',', ''))
+    price = float(prices[0]) if prices else None
+
+    print(f"New message from {message.from_user.username}: {message.text}, price={price}")
+    await save_to_db(message, price)
+
+dp.message.register(handle_message)
+
+# ==== КОМАНДА /top5 ПО ЦЕНЕ ====
+async def top5_command(message: types.Message):
+    conn = await asyncpg.connect(dsn=DB_DSN)
+    
+    # Берем топ-5 самых дорогих объявлений
+    rows = await conn.fetch(
+        "SELECT text, sender, price FROM raw_messages WHERE price IS NOT NULL ORDER BY price DESC LIMIT 5"
+    )
+    await conn.close()
+
+    if not rows:
+        await message.answer("Нет объявлений с ценой.")
+        return
+
+    # Первые 4 — без контакта
+    for r in rows[:4]:
+        await message.answer(f"Объявление: {r['text']}\nЦена: {r['price']}")
+
+    # 5-е объявление — с контактом
+    last = rows[4]
+    await message.answer(f"ТОП объявление:\n{last['text']}\nЦена: {last['price']}\nКонтакт: {last['sender']}")
+
+# Регистрируем команду
+dp.message.register(top5_command, lambda m: m.text and m.text.lower() == "/top5")
+
+# ==== ЗАПУСК БОТА ====
+async def main():
+    print("Bot is starting...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+=== ./bot/Dockerfile ===
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python", "bot.py"]
+
+=== ./bot/requirements.txt ===
+requests
+aiogram==3.1.0
+asyncpg==0.27.0
+
+=== ./docker-compose.yml ===
+version: "3.9"
+
+services:
+
+  db:
+    image: postgres:16
+    container_name: marketbot-db
+    restart: always
+    environment:
+      POSTGRES_DB: marketbot
+      POSTGRES_USER: marketbot
+      POSTGRES_PASSWORD: marketbot
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  api:
+    build: ./backend-go
+    container_name: marketbot-api
+    restart: always
+    depends_on:
+      - db
+    environment:
+      DB_DSN: postgres://marketbot:marketbot@db:5432/marketbot?sslmode=disable
+    ports:
+      - "8081:8080"
+      
+  nlp:
+    build: ./nlp-python
+    volumes:
+      - ./nlp:/app
+    container_name: marketbot-nlp
+    restart: always
+    command: python collector.py
+    environment:
+      - API_ID=21879738
+      - API_HASH=49f3531be2f9b7860b5c941b2ed27b7e
+      - DB_DSN=postgres://marketbot:marketbot@db:5432/marketbot
+
+  bot:
+    build: ./bot
+    container_name: marketbot-bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=8474050703:AAHNMi1MwmQdeNm4XDAT-YReibzQjsOJahg
+      - DB_DSN=postgres://marketbot:marketbot@db:5432/marketbot
+    depends_on:
+      - api
+      - nlp
+      - db
+
+  proxy:
+    image: caddy:latest
+    container_name: marketbot-proxy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile
+
+volumes:
+  db_data:
+
+=== ./infra/Caddyfile ===
+:80 {
+    reverse_proxy api:8080
+}
+
+=== ./listing.txt ===
+=== ./.github/workflows/deploy.yml ===
+
+=== ./.vscode/settings.json ===
+{
+    "Codegeex.RepoIndex": true
+}
+=== ./backend-go/Dockerfile ===
+FROM golang:1.22-alpine
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -o api
+CMD ["./api"]
+
+=== ./backend-go/go.mod ===
+module marketbot/api
+
+go 1.22
+
+=== ./backend-go/go.sum ===
+
+=== ./backend-go/main.go ===
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Marketbot API started")
+}
+
+=== ./bot/bot.py ===
+import os
+import asyncio
+from aiogram import Bot, Dispatcher, types
+import asyncpg
+
+# ==== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ====
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+DB_DSN = os.getenv("DB_DSN", "postgres://marketbot:marketbot@db:5432/marketbot")
+
+if TOKEN is None:
+    raise ValueError("TELEGRAM_BOT_TOKEN not set!")
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+# ==== ФУНКЦИЯ СОХРАНЕНИЯ СООБЩЕНИЙ С ЦЕНОЙ ====
+async def save_to_db(message: types.Message, price: float = None):
+    conn = await asyncpg.connect(dsn=DB_DSN)
+    await conn.execute(
+        "INSERT INTO raw_messages(chat_id, message_id, sender, text, price) VALUES($1,$2,$3,$4,$5)",
+        message.chat.id,
+        message.message_id,
+        message.from_user.username,
+        message.text,
+        price
+    )
+    await conn.close()
+
+# ==== ОБРАБОТЧИК СООБЩЕНИЙ ====
+async def handle_message(message: types.Message):
+    # Попробуем извлечь цену из текста (например, числа в сообщении)
+    import re
+    prices = re.findall(r'\d+', message.text.replace(',', ''))
+    price = float(prices[0]) if prices else None
+
+    print(f"New message from {message.from_user.username}: {message.text}, price={price}")
+    await save_to_db(message, price)
+
+dp.message.register(handle_message)
+
+# ==== КОМАНДА /top5 ПО ЦЕНЕ ====
+async def top5_command(message: types.Message):
+    conn = await asyncpg.connect(dsn=DB_DSN)
+    
+    # Берем топ-5 самых дорогих объявлений
+    rows = await conn.fetch(
+        "SELECT text, sender, price FROM raw_messages WHERE price IS NOT NULL ORDER BY price DESC LIMIT 5"
+    )
+    await conn.close()
+
+    if not rows:
+        await message.answer("Нет объявлений с ценой.")
+        return
+
+    # Первые 4 — без контакта
+    for r in rows[:4]:
+        await message.answer(f"Объявление: {r['text']}\nЦена: {r['price']}")
+
+    # 5-е объявление — с контактом
+    last = rows[4]
+    await message.answer(f"ТОП объявление:\n{last['text']}\nЦена: {last['price']}\nКонтакт: {last['sender']}")
+
+# Регистрируем команду
+dp.message.register(top5_command, lambda m: m.text and m.text.lower() == "/top5")
+
+# ==== ЗАПУСК БОТА ====
+async def main():
+    print("Bot is starting...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+=== ./bot/Dockerfile ===
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python", "bot.py"]
+
+=== ./bot/requirements.txt ===
+requests
+aiogram==3.1.0
+asyncpg==0.27.0
+
+=== ./docker-compose.yml ===
+version: "3.9"
+
+services:
+
+  db:
+    image: postgres:16
+    container_name: marketbot-db
+    restart: always
+    environment:
+      POSTGRES_DB: marketbot
+      POSTGRES_USER: marketbot
+      POSTGRES_PASSWORD: marketbot
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  api:
+    build: ./backend-go
+    container_name: marketbot-api
+    restart: always
+    depends_on:
+      - db
+    environment:
+      DB_DSN: postgres://marketbot:marketbot@db:5432/marketbot?sslmode=disable
+    ports:
+      - "8081:8080"
+      
+  nlp:
+    build: ./nlp-python
+    volumes:
+      - ./nlp:/app
+    container_name: marketbot-nlp
+    restart: always
+    command: python collector.py
+    environment:
+      - API_ID=21879738
+      - API_HASH=49f3531be2f9b7860b5c941b2ed27b7e
+      - DB_DSN=postgres://marketbot:marketbot@db:5432/marketbot
+
+  bot:
+    build: ./bot
+    container_name: marketbot-bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=8474050703:AAHNMi1MwmQdeNm4XDAT-YReibzQjsOJahg
+      - DB_DSN=postgres://marketbot:marketbot@db:5432/marketbot
+    depends_on:
+      - api
+      - nlp
+      - db
+
+  proxy:
+    image: caddy:latest
+    container_name: marketbot-proxy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile
+
+volumes:
+  db_data:
+
+=== ./infra/Caddyfile ===
+:80 {
+    reverse_proxy api:8080
+}
+
+=== ./listing.txt ===
+
+=== ./nlp/collector.py ===
+import os
+import asyncio
+from telethon import TelegramClient, events
+import asyncpg
+
+# ==== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ====
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+DB_DSN = os.getenv("DB_DSN", "postgres://marketbot:marketbot@db:5432/marketbot")
+
+# Создаем клиент Telethon
+client = TelegramClient('collector_session', API_ID, API_HASH)
+
+# ==== ФУНКЦИЯ СОХРАНЕНИЯ В БАЗУ ====
+async def save_to_db(chat, user, text, timestamp):
+    conn = await asyncpg.connect(dsn=DB_DSN)
+    await conn.execute(
+        "INSERT INTO raw_messages(chat_id, sender, text, created_at) VALUES($1,$2,$3,$4)",
+        chat, user, text, timestamp
+    )
+    await conn.close()
+
+# ==== ОБРАБОТЧИК СООБЩЕНИЙ ====
+@client.on(events.NewMessage)
+async def handler(event):
+    chat_id = event.chat_id
+    sender = event.sender.username if event.sender else "unknown"
+    text = event.raw_text
+    timestamp = event.date
+    print(f"Got message from {sender} in chat {chat_id}")
+    await save_to_db(chat_id, sender, text, timestamp)
+
+# ==== ЗАПУСК TELETHON ====
+async def main():
+    await client.start()
+    print("Collector started...")
+    await client.run_until_disconnected()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+=== ./nlp/Dockerfile ===
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Копируем файл зависимостей
+COPY requirements.txt .
+
+# Устанавливаем зависимости
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем весь код в контейнер
+COPY . .
+
+# Запуск скрипта
+CMD ["python", "collector.py"]
+
+=== ./nlp/requirements.txt ===
+aiogram==3.1.0
+asyncpg==0.27.0
+requests==2.31.0
+telethon==1.27.0
+
+=== ./nlp-python/analyze.py ===
+import spacy
+import asyncpg
+import os
+
+DB_DSN = "postgres://marketbot:marketbot@db:5432/marketbot"
+nlp = spacy.load("ru_core_news_sm")
+
+async def analyze_messages():
+    conn = await asyncpg.connect(dsn=DB_DSN)
+    rows = await conn.fetch("SELECT id, text FROM raw_messages WHERE id NOT IN (SELECT raw_id FROM listings)")
+    for row in rows:
+        doc = nlp(row['text'])
+        # простой пример: ищем цену
+        price = None
+        for token in doc:
+            if token.like_num:
+                price = int(token.text)
+                break
+        # классификация типа объявления (простейшая)
+        type_ = "sale" if "продам" in row['text'].lower() else "buy"
+        category = "general"
+        await conn.execute(
+            "INSERT INTO listings(type, category, title, description, price, contact, source_chat) VALUES($1,$2,$3,$4,$5,$6,$7)",
+            type_, category, row['text'][:50], row['text'], price, None, 0
+        )
+    await conn.close()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(analyze_messages())
+
+=== ./nlp-python/Dockerfile ===
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+CMD ["python", "collector.py"]
+
+=== ./nlp-python/requirements.txt ===
+fastapi
+uvicorn
+spacy
+natasha
+aiogram
+asyncpg
+
+=== ./nlp-python/service.py ===
+import asyncio
+from aiogram import Bot, Dispatcher, types
+import asyncpg
+import os
+
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+DB_DSN = "postgres://marketbot:marketbot@db:5432/marketbot"
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher(bot)
+
+async def save_to_db(chat_id, message):
+    conn = await asyncpg.connect(dsn=DB_DSN)
+    await conn.execute(
+        "INSERT INTO raw_messages(chat_id, message_id, sender, text) VALUES($1,$2,$3,$4)",
+        chat_id, message.message_id, message.from_user.username, message.text
+    )
+    await conn.close()
+
+@dp.message_handler()
+async def handle_message(message: types.Message):
+    await save_to_db(message.chat.id, message)
+
+if __name__ == "__main__":
+    from aiogram import executor
+    executor.start_polling(dp, skip_updates=True)
+
+
+=== ./nlp/collector.py ===
+import os
+import asyncio
+from telethon import TelegramClient, events
+import asyncpg
+
+# ==== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ====
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+DB_DSN = os.getenv("DB_DSN", "postgres://marketbot:marketbot@db:5432/marketbot")
+
+# Создаем клиент Telethon
+client = TelegramClient('collector_session', API_ID, API_HASH)
+
+# ==== ФУНКЦИЯ СОХРАНЕНИЯ В БАЗУ ====
+async def save_to_db(chat, user, text, timestamp):
+    conn = await asyncpg.connect(dsn=DB_DSN)
+    await conn.execute(
+        "INSERT INTO raw_messages(chat_id, sender, text, created_at) VALUES($1,$2,$3,$4)",
+        chat, user, text, timestamp
+    )
+    await conn.close()
+
+# ==== ОБРАБОТЧИК СООБЩЕНИЙ ====
+@client.on(events.NewMessage)
+async def handler(event):
+    chat_id = event.chat_id
+    sender = event.sender.username if event.sender else "unknown"
+    text = event.raw_text
+    timestamp = event.date
+    print(f"Got message from {sender} in chat {chat_id}")
+    await save_to_db(chat_id, sender, text, timestamp)
+
+# ==== ЗАПУСК TELETHON ====
+async def main():
+    await client.start()
+    print("Collector started...")
+    await client.run_until_disconnected()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+=== ./nlp/Dockerfile ===
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Копируем файл зависимостей
+COPY requirements.txt .
+
+# Устанавливаем зависимости
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем весь код в контейнер
+COPY . .
+
+# Запуск скрипта
+CMD ["python", "collector.py"]
+
+=== ./nlp/requirements.txt ===
+aiogram==3.1.0
+asyncpg==0.27.0
+requests==2.31.0
+telethon==1.27.0
+
+=== ./nlp-python/analyze.py ===
+import spacy
+import asyncpg
+import os
+
+DB_DSN = "postgres://marketbot:marketbot@db:5432/marketbot"
+nlp = spacy.load("ru_core_news_sm")
+
+async def analyze_messages():
+    conn = await asyncpg.connect(dsn=DB_DSN)
+    rows = await conn.fetch("SELECT id, text FROM raw_messages WHERE id NOT IN (SELECT raw_id FROM listings)")
+    for row in rows:
+        doc = nlp(row['text'])
+        # простой пример: ищем цену
+        price = None
+        for token in doc:
+            if token.like_num:
+                price = int(token.text)
+                break
+        # классификация типа объявления (простейшая)
+        type_ = "sale" if "продам" in row['text'].lower() else "buy"
+        category = "general"
+        await conn.execute(
+            "INSERT INTO listings(type, category, title, description, price, contact, source_chat) VALUES($1,$2,$3,$4,$5,$6,$7)",
+            type_, category, row['text'][:50], row['text'], price, None, 0
+        )
+    await conn.close()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(analyze_messages())
+
+=== ./nlp-python/Dockerfile ===
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+CMD ["python", "collector.py"]
+
+=== ./nlp-python/requirements.txt ===
+fastapi
+uvicorn
+spacy
+natasha
+aiogram
+asyncpg
+
+=== ./nlp-python/service.py ===
+import asyncio
+from aiogram import Bot, Dispatcher, types
+import asyncpg
+import os
+
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+DB_DSN = "postgres://marketbot:marketbot@db:5432/marketbot"
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher(bot)
+
+async def save_to_db(chat_id, message):
+    conn = await asyncpg.connect(dsn=DB_DSN)
+    await conn.execute(
+        "INSERT INTO raw_messages(chat_id, message_id, sender, text) VALUES($1,$2,$3,$4)",
+        chat_id, message.message_id, message.from_user.username, message.text
+    )
+    await conn.close()
+
+@dp.message_handler()
+async def handle_message(message: types.Message):
+    await save_to_db(message.chat.id, message)
+
+if __name__ == "__main__":
+    from aiogram import executor
+    executor.start_polling(dp, skip_updates=True)
+
