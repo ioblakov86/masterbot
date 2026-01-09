@@ -36,6 +36,7 @@ services:
       - API_HASH=${API_HASH}
       - TELETHON_SESSION=${TELETHON_SESSION}
       - DB_DSN=${DB_DSN}
+      - BOT_TOKEN=${BOT_TOKEN}
 
     volumes:
       - ./nlp:/app
@@ -45,7 +46,7 @@ services:
     container_name: marketbot-bot
     restart: unless-stopped
     environment:
-      - TELEGRAM_BOT_TOKEN=8474050703:AAHNMi1MwmQdeNm4XDAT-YReibzQjsOJahg
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - DB_DSN=postgres://marketbot:marketbot@db:5432/marketbot
     depends_on:
       - api
